@@ -6,6 +6,8 @@ from psycopg2.extras import execute_batch
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import queue
+import sys
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -21,7 +23,8 @@ INTERVAL = '1s'
 LIMIT = 1000  # Max allowed per request
 
 # Parallel processing configuration (same as main.py)
-MAX_WORKERS = 50  # Increased from 30 to 50 as requested
+MAX_WORKERS = 20  # Reduced to 20 for better DB handling
+INSERT_WORKERS = 10  # Number of threads for DB inserts
 RATE_LIMIT_DELAY = 0.05  # Delay between requests to avoid rate limits
 MAX_RETRIES = 5  # Maximum number of retries for failed requests
 RETRY_DELAY = 2  # Initial delay between retries (seconds)
@@ -29,7 +32,7 @@ RETRY_DELAY = 2  # Initial delay between retries (seconds)
 # Slack notification configuration
 SLACK_WEBHOOK_URL = 'https://hooks.slack.com/services/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'
 
-start_dt = datetime(2025, 3, 22, 11, 1, 20)
+start_dt = datetime(2025, 1, 1)
 end_dt = datetime(2025, 9, 24, 19, 0, 0)
 
 start_ms = int(start_dt.timestamp() * 1000)
@@ -182,7 +185,7 @@ def create_database_and_table():
         print(f"Error setting up database: {e}")
         raise
 
-def insert_data_to_db(data_batch):
+def insert_data_to_db(data_batch, interval_id, start_ts):
     """Insert data batch into PostgreSQL database"""
     try:
         conn = psycopg2.connect(
@@ -207,10 +210,23 @@ def insert_data_to_db(data_batch):
         cursor.close()
         conn.close()
 
+        print(f'💾 Stored interval {interval_id}: {datetime.utcfromtimestamp(start_ts/1000)} ({len(data_batch)} records)')
         return True
     except Exception as e:
         print(f"Error inserting data to database: {e}")
         return False
+
+def inserter_worker(insert_queue):
+    """Worker thread for inserting data to DB"""
+    while True:
+        item = insert_queue.get()
+        if item is None:  # Sentinel to stop
+            break
+        batch_data, interval_id, start_ts = item
+        success = insert_data_to_db(batch_data, interval_id, start_ts)
+        if not success:
+            print(f'❌ Failed to store interval {interval_id}')
+        insert_queue.task_done()
 
 # Initialize database
 create_database_and_table()
@@ -235,12 +251,22 @@ while current_ms <= end_ms:
     interval_id += 1
 
 print(f'Total intervals to process: {len(intervals)}')
-print(f'Using {MAX_WORKERS} parallel workers')
+print(f'Using {MAX_WORKERS} parallel workers for fetching')
+print(f'Using {INSERT_WORKERS} parallel workers for DB inserts')
+
+# Queue for DB inserts
+insert_queue = queue.Queue()
+
+# Start inserter threads
+inserter_threads = []
+for _ in range(INSERT_WORKERS):
+    t = threading.Thread(target=inserter_worker, args=(insert_queue,))
+    t.start()
+    inserter_threads.append(t)
 
 # Store results for ordered processing
 results = {}
 completed_count = 0
-lock = threading.Lock()  # For thread-safe database operations
 
 # Use ThreadPoolExecutor to fetch data in parallel
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -256,13 +282,8 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         try:
             batch_data, start_ts, end_ts = future.result()
             if batch_data:
-                # Insert data to database immediately (thread-safe)
-                with lock:
-                    success = insert_data_to_db(batch_data)
-                    if success:
-                        print(f'💾 Stored interval {iid}: {datetime.utcfromtimestamp(start_ts/1000)} ({len(batch_data)} records)')
-                    else:
-                        print(f'❌ Failed to store interval {iid}')
+                # Put data to insert queue
+                insert_queue.put((batch_data, iid, start_ts))
 
             completed_count += 1
 
@@ -274,5 +295,15 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             print(f'❌ Exception in interval {iid}: {e}')
             completed_count += 1
 
+# Wait for all inserts to complete
+insert_queue.join()
+
+# Stop inserter threads
+for _ in range(INSERT_WORKERS):
+    insert_queue.put(None)
+for t in inserter_threads:
+    t.join()
+
 print("\n🎉 ALL INTERVALS PROCESSED!")
 print("📁 Data saved to PostgreSQL database")
+sys.exit(0)
