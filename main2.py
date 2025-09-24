@@ -6,27 +6,29 @@ import csv
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Bitstamp API configuration
-BASE_URL = 'https://www.bitstamp.net/api/v2/ohlc/btcusd'
-STEP = 60  # 1 minute in seconds
-MAX_CANDLES_PER_REQUEST = 1000  # Bitstamp limit for 1m granularity
+# Binance API configuration
+BASE_URL = 'https://api.binance.com/api/v3/klines'
+STEP = 1  # 1 second in seconds
+INTERVAL = '1s'  # 1 second
+MAX_CANDLES_PER_REQUEST = 1000  # Binance limit for 1s
 MAX_WORKERS = 50  # Number of parallel workers
-RATE_LIMIT_DELAY = 0.05  # Delay between requests to avoid rate limits
+RATE_LIMIT_DELAY = 0.025  # Delay between requests to avoid rate limits
 MAX_RETRIES = 5  # Maximum number of retries for failed requests
 RETRY_DELAY = 2  # Initial delay between retries (seconds)
 
 # Data collection configuration
-START_DATE = datetime(2011, 8, 18, tzinfo=timezone.utc)  # Earliest Bitstamp data
-END_DATE = datetime(2015, 7, 21, 0, 0, 0, tzinfo=timezone.utc)  # Target end date
+START_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)  # Start from 2024
+END_DATE = datetime(2025, 9, 24, tzinfo=timezone.utc)  # Up to current date
 
-def get_candles_bitstamp(start_unix, end_unix, retry_count=0):
+def get_candles_binance(start_unix, end_unix, retry_count=0):
     """
-    Fetch candle data from Bitstamp API with robust retry logic
+    Fetch candle data from Binance API with robust retry logic
     """
     params = {
-        'start': start_unix,
-        'end': end_unix,
-        'step': STEP,
+        'symbol': 'BTCUSDT',
+        'interval': INTERVAL,
+        'startTime': start_unix * 1000,  # Binance uses milliseconds
+        'endTime': end_unix * 1000,
         'limit': MAX_CANDLES_PER_REQUEST
     }
 
@@ -35,17 +37,18 @@ def get_candles_bitstamp(start_unix, end_unix, retry_count=0):
 
         if response.status_code == 200:
             data = response.json()
-            if 'data' in data and 'ohlc' in data['data'] and data['data']['ohlc']:
-                # Convert Bitstamp format to our database format
+            if data and isinstance(data, list):
+                # Convert Binance format to our database format
+                # Binance: [open_time, open, high, low, close, volume, close_time, ...]
                 converted_data = []
-                for candle in data['data']['ohlc']:
-                    timestamp_unix = int(candle['timestamp'])
+                for candle in data:
+                    timestamp_unix = int(candle[0] / 1000)  # Convert to seconds
                     timestamp = datetime.fromtimestamp(timestamp_unix, timezone.utc)
-                    open_price = float(candle['open'])
-                    high_price = float(candle['high'])
-                    low_price = float(candle['low'])
-                    close_price = float(candle['close'])
-                    volume = float(candle['volume'])
+                    open_price = float(candle[1])
+                    high_price = float(candle[2])
+                    low_price = float(candle[3])
+                    close_price = float(candle[4])
+                    volume = float(candle[5])
 
                     converted_data.append((timestamp, open_price, high_price, low_price, close_price, volume))
 
@@ -56,38 +59,38 @@ def get_candles_bitstamp(start_unix, end_unix, retry_count=0):
         elif response.status_code == 429:  # Rate limit exceeded
             if retry_count < MAX_RETRIES:
                 retry_delay = RETRY_DELAY * (2 ** retry_count)
-                print(f'   ⏳ Bitstamp rate limit hit. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
+                print(f'   ⏳ Binance rate limit hit. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
                 time.sleep(retry_delay)
-                return get_candles_bitstamp(start_unix, end_unix, retry_count + 1)
+                return get_candles_binance(start_unix, end_unix, retry_count + 1)
             else:
-                print(f'   ❌ Bitstamp rate limit exceeded. Max retries reached.')
+                print(f'   ❌ Binance rate limit exceeded. Max retries reached.')
                 return None
         else:
             if retry_count < MAX_RETRIES:
                 retry_delay = RETRY_DELAY * (2 ** retry_count)
-                print(f'   ⚠️  Bitstamp request failed: {response.status_code}. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
+                print(f'   ⚠️  Binance request failed: {response.status_code}. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
                 time.sleep(retry_delay)
-                return get_candles_bitstamp(start_unix, end_unix, retry_count + 1)
+                return get_candles_binance(start_unix, end_unix, retry_count + 1)
             else:
-                print(f'   ❌ Bitstamp request failed: {response.status_code}. Max retries reached.')
+                print(f'   ❌ Binance request failed: {response.status_code}. Max retries reached.')
                 return None
 
     except Exception as e:
         if retry_count < MAX_RETRIES:
             retry_delay = RETRY_DELAY * (2 ** retry_count)
-            print(f'   🔄 Bitstamp request exception: {e}. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
+            print(f'   🔄 Binance request exception: {e}. Retrying in {retry_delay}s... (attempt {retry_count + 1}/{MAX_RETRIES})')
             time.sleep(retry_delay)
-            return get_candles_bitstamp(start_unix, end_unix, retry_count + 1)
+            return get_candles_binance(start_unix, end_unix, retry_count + 1)
         else:
-            print(f'   ❌ Bitstamp request exception: {e}. Max retries reached.')
+            print(f'   ❌ Binance request exception: {e}. Max retries reached.')
             return None
 
 def fetch_interval_data(start_unix, end_unix, interval_id):
     """
-    Fetch data for a specific time interval from Bitstamp API
+    Fetch data for a specific time interval from Binance API
     """
     try:
-        raw_data = get_candles_bitstamp(start_unix, end_unix)
+        raw_data = get_candles_binance(start_unix, end_unix)
         if raw_data is None:
             print(f'✗ Error fetching interval {interval_id}: No data returned')
             return None
@@ -114,16 +117,16 @@ def fetch_interval_data(start_unix, end_unix, interval_id):
         print(f'✗ Error fetching interval {interval_id}: {e}')
         return None, start_unix, end_unix
 
-def fetch_year_data(year_start, year_end, year):
+def fetch_day_data(day_start, day_end, day_str):
     """
-    Fetch complete year data from Bitstamp API and save to CSV
+    Fetch complete day data from Coinbase Pro API and save to CSV
     """
-    start_unix = int(year_start.timestamp())
-    end_unix = int(year_end.timestamp())
-    delta = STEP * MAX_CANDLES_PER_REQUEST  # 1000 minutes = ~17 hours
+    start_unix = int(day_start.timestamp())
+    end_unix = int(day_end.timestamp())
+    delta = STEP * MAX_CANDLES_PER_REQUEST  # 1000 seconds = ~16.7 minutes
 
-    print(f"📡 Fetching {year} data from Bitstamp...")
-    print(f"   Date range: {year_start} to {year_end}")
+    print(f"📡 Fetching {day_str} data from Coinbase...")
+    print(f"   Date range: {day_start} to {day_end}")
 
     # Generate all time intervals
     intervals = []
@@ -167,8 +170,11 @@ def fetch_year_data(year_start, year_end, year):
                 print(f'   ✗ Exception in interval {iid}: {e}')
                 completed_count += 1
 
+    # Create directory if not exists
+    os.makedirs('data/btc/1sec', exist_ok=True)
+
     # Write results to CSV
-    filename = f'BTCUSD_1m_candles_{year}.csv'
+    filename = f'data/btc/1sec/BTCUSD_1s_candles_{day_str}.csv'
     print(f'   💾 Writing results to {filename}...')
 
     with open(filename, 'w', newline='') as csvfile:
@@ -183,16 +189,16 @@ def fetch_year_data(year_start, year_end, year):
                 writer.writerow(row)
                 total_candles += 1
 
-    print(f'   ✅ {year}: {total_candles:,} candles saved to {filename}')
-    print(f'   ✅ {year}: Successfully fetched {len(results)}/{len(intervals)} intervals\n')
+    print(f'   ✅ {day_str}: {total_candles:,} candles saved to {filename}')
+    print(f'   ✅ {day_str}: Successfully fetched {len(results)}/{len(intervals)} intervals\n')
 
     return filename, total_candles
 
 def main():
     """
-    Main function to fetch Bitstamp BTC/USD data from 2011-08-18 to 2015-07-21
+    Main function to fetch Coinbase Pro BTC/USD 1-second data from 2024-01-01 to 2025-09-24
     """
-    print("🚀 BITSTAMP BTC/USD DATA COLLECTION")
+    print("🚀 BINANCE BTC/USDT 1-SECOND DATA COLLECTION")
     print("="*70)
     print(f"📅 Date range: {START_DATE} to {END_DATE}")
     print(f"🔧 Workers: {MAX_WORKERS}")
@@ -200,63 +206,56 @@ def main():
     print(f"🔄 Max retries: {MAX_RETRIES}")
     print("="*70)
 
-    # Calculate years to process
-    start_year = START_DATE.year
-    end_year = END_DATE.year
+    # Calculate days to process
+    current_date = START_DATE
+    successful_days = []
+    failed_days = []
 
-    successful_years = []
-    failed_years = []
-
-    for year in range(start_year, end_year + 1):
+    while current_date <= END_DATE:
         try:
-            print(f"📊 Processing year {year}...")
+            day_str = current_date.strftime('%Y-%m-%d')
+            print(f"📊 Processing day {day_str}...")
 
-            # Determine year start and end
-            year_start = max(START_DATE, datetime(year, 1, 1, tzinfo=timezone.utc))
-            year_end = min(END_DATE, datetime(year, 12, 31, 23, 59, 59, tzinfo=timezone.utc))
+            # Day start and end
+            day_start = current_date
+            day_end = min(current_date + timedelta(days=1), END_DATE + timedelta(days=1))
 
-            # Skip if year is completely before start date
-            if year_end < START_DATE:
-                continue
+            print(f"   📅 Day range: {day_start} to {day_end}")
 
-            # Skip if year is completely after end date
-            if year_start > END_DATE:
-                continue
-
-            print(f"   📅 Year range: {year_start} to {year_end}")
-
-            # Fetch data for this year
-            filename, total_candles = fetch_year_data(year_start, year_end, year)
+            # Fetch data for this day
+            filename, total_candles = fetch_day_data(day_start, day_end, day_str)
 
             if total_candles > 0:
-                successful_years.append(year)
-                print(f"   ✅ {year}: {total_candles:,} candles saved to {filename}")
+                successful_days.append(day_str)
+                print(f"   ✅ {day_str}: {total_candles:,} candles saved to {filename}")
             else:
-                failed_years.append(year)
-                print(f"   ❌ {year}: Failed to fetch any data")
+                failed_days.append(day_str)
+                print(f"   ❌ {day_str}: Failed to fetch any data")
 
         except KeyboardInterrupt:
-            print(f"\n⚠️  Pipeline interrupted by user at year {year}")
+            print(f"\n⚠️  Pipeline interrupted by user at day {day_str}")
             break
         except Exception as e:
-            print(f"❌ {year}: Unexpected error: {e}")
-            failed_years.append(year)
+            print(f"❌ {day_str}: Unexpected error: {e}")
+            failed_days.append(day_str)
+
+        current_date += timedelta(days=1)
 
     # Final summary
     print("\n" + "="*70)
-    print("📊 BITSTAMP DATA COLLECTION SUMMARY")
+    print("📊 BINANCE 1-SECOND DATA COLLECTION SUMMARY")
     print("="*70)
-    print(f"✅ Successful years: {len(successful_years)}")
-    if successful_years:
-        print(f"   {', '.join(map(str, successful_years))}")
+    print(f"✅ Successful days: {len(successful_days)}")
+    if successful_days:
+        print(f"   First: {successful_days[0]}, Last: {successful_days[-1]}")
 
-    if failed_years:
-        print(f"\n❌ Failed years: {len(failed_years)}")
-        print(f"   {', '.join(map(str, failed_years))}")
-        print("\n🔧 You can re-run the script to retry failed years")
+    if failed_days:
+        print(f"\n❌ Failed days: {len(failed_days)}")
+        print(f"   {', '.join(failed_days[:10])}{'...' if len(failed_days) > 10 else ''}")
+        print("\n🔧 You can re-run the script to retry failed days")
     else:
-        print(f"\n🎉 ALL YEARS COMPLETED SUCCESSFULLY!")
-        print(f"� Check the generated CSV files for your Bitstamp BTC/USD data (2011-2015)")
+        print(f"\n🎉 ALL DAYS COMPLETED SUCCESSFULLY!")
+        print(f"📁 Check the generated CSV files in /data/btc/1sec/ for your Binance BTC/USDT 1-second data (2024-2025)")
 
 if __name__ == "__main__":
     main()

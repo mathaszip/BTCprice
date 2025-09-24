@@ -8,6 +8,7 @@ This repository contains complete CSV files with candlestick data for Bitcoin (B
 
 - **Bitstamp**: 11-08-2011 - 21-07-2015
 - **Coinbase**: 21-07-2015 - 24-09-2025
+- **Binance**: 01-01-2024 - 24-09-2025 (1-second data)
 
 ### Ethereum (ETH)
 
@@ -22,6 +23,7 @@ The CSV files are located in the `/data/` folder, organized by cryptocurrency:
 
 ### Bitcoin (BTC) Data Structure
 
+- **1sec/**: ⏱️ 1-second candlestick data per day (2024-2025)
 - **1min/**: 📈 1-minute candlestick data per year (2011-2025)
 - **5min/**: 📊 5-minute aggregated candlesticks per year (2011-2025) and combined full file
 - **30min/**: 📊 30-minute aggregated candlesticks (full period)
